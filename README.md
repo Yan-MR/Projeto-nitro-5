@@ -68,6 +68,14 @@ Install Python dependencies:
 pip install -r requirements.txt
 ```
 
+## Third-Party Credits
+
+ForcaNitro uses `ec-probe.exe` from [NoteBook FanControl / NBFC](https://github.com/hirschmann/nbfc) by Stefan Hirschmann as the low-level fan control backend.
+
+NBFC is a separate open-source project that provides fan control tooling for notebooks. ForcaNitro does not include or modify NBFC source code; it expects NoteBook FanControl to be installed separately and calls the local `ec-probe.exe` executable to write the EC values used by this project.
+
+Please check the [NBFC repository](https://github.com/hirschmann/nbfc) and its license before redistributing any NBFC binaries.
+
 ## Running From Source
 
 ```powershell
@@ -202,6 +210,14 @@ python -m PyInstaller --noconfirm --onefile --windowed --name ForcaNitro app_ven
 4. Abra `dist\ForcaNitro.exe`.
 5. Escolha `Auto`, `Max`, `Fixo` ou `Custom`.
 6. Monitore as temperaturas depois de aplicar qualquer perfil manual.
+
+### Creditos
+
+O ForcaNitro usa o `ec-probe.exe` do [NoteBook FanControl / NBFC](https://github.com/hirschmann/nbfc), projeto open-source criado por Stefan Hirschmann, como backend de baixo nivel para controlar as ventoinhas.
+
+O NBFC e um projeto separado. O ForcaNitro nao inclui nem modifica o codigo-fonte do NBFC; ele espera que o NoteBook FanControl esteja instalado na maquina e chama o `ec-probe.exe` local para aplicar os valores de EC usados por este projeto.
+
+Antes de redistribuir qualquer binario do NBFC, confira o repositorio e a licenca do projeto original.
 
 ### Tecla NitroSense
 
