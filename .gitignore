@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Local diagnostics/runtime files
+*.log
+NitroSense.task.backup.xml
+
+# Local reference image from the original NitroSense UI.
+# Do not publish Acer-owned screenshots/assets in this repo.
+exemplo interface.webp
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
