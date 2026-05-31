@@ -10,6 +10,9 @@ build/
 dist/
 *.spec
 
+# Release-only third-party installers/assets
+NoteBookFanControl*.exe
+
 # Local diagnostics/runtime files
 *.log
 NitroSense.task.backup.xml
