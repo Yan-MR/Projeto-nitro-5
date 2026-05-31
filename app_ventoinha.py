@@ -1,13 +1,17 @@
 import math
-import random
+import ctypes
+import re
+import shutil
 import subprocess
 import sys
+import threading
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QSignalBlocker, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -21,6 +25,156 @@ from PyQt6.QtWidgets import (
 
 
 EC_PROBE_PATH = r"C:\Program Files (x86)\NoteBook FanControl\ec-probe.exe"
+CPU_TEMP_REGISTER = 0xA7
+CPU_RPM_REGISTER = 0x13
+GPU_RPM_REGISTER = 0x15
+
+
+class FILETIME(ctypes.Structure):
+    _fields_ = [
+        ("dwLowDateTime", ctypes.c_ulong),
+        ("dwHighDateTime", ctypes.c_ulong),
+    ]
+
+
+class SystemMonitor:
+    def __init__(self):
+        self._previous_cpu_times = self._read_cpu_times()
+        self._nvidia_smi = shutil.which("nvidia-smi")
+
+    def read(self):
+        ec_values = self._read_ec_dump()
+        gpu_temp, gpu_load = self._read_nvidia_gpu()
+        return {
+            "cpu_temp": self._read_ec_temperature(ec_values, CPU_TEMP_REGISTER),
+            "cpu_load": self._read_cpu_load(),
+            "gpu_temp": gpu_temp,
+            "gpu_load": gpu_load,
+            "cpu_rpm": self._read_ec_word(ec_values, CPU_RPM_REGISTER),
+            "gpu_rpm": self._read_ec_word(ec_values, GPU_RPM_REGISTER),
+        }
+
+    def _read_ec_dump(self):
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        try:
+            result = subprocess.run(
+                [EC_PROBE_PATH, "dump"],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                creationflags=flags,
+                check=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return {}
+
+        values = {}
+        for line in result.stdout.splitlines():
+            match = re.match(r"^([0-9A-Fa-f]{2})\s*\|\s*(.*)$", line.strip())
+            if not match:
+                continue
+
+            base_address = int(match.group(1), 16)
+            for offset, raw_value in enumerate(match.group(2).split()[:16]):
+                try:
+                    values[base_address + offset] = int(raw_value, 16)
+                except ValueError:
+                    continue
+
+        return values
+
+    def _read_ec_temperature(self, values, address):
+        value = values.get(address)
+        if value is None or value < 20 or value > 105:
+            return None
+        return value
+
+    def _read_ec_word(self, values, address):
+        low = values.get(address)
+        high = values.get(address + 1)
+        if low is None or high is None:
+            return None
+
+        rpm = (high << 8) | low
+        if rpm < 0 or rpm > 12000:
+            return None
+        return rpm
+
+    def _read_cpu_times(self):
+        if sys.platform != "win32":
+            return None
+
+        idle = FILETIME()
+        kernel = FILETIME()
+        user = FILETIME()
+        ok = ctypes.windll.kernel32.GetSystemTimes(
+            ctypes.byref(idle),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        )
+        if not ok:
+            return None
+
+        return (
+            self._filetime_to_int(idle),
+            self._filetime_to_int(kernel),
+            self._filetime_to_int(user),
+        )
+
+    def _read_cpu_load(self):
+        current = self._read_cpu_times()
+        previous = self._previous_cpu_times
+        self._previous_cpu_times = current
+
+        if not current or not previous:
+            return None
+
+        idle_delta = current[0] - previous[0]
+        kernel_delta = current[1] - previous[1]
+        user_delta = current[2] - previous[2]
+        total_delta = kernel_delta + user_delta
+        if total_delta <= 0:
+            return None
+
+        busy_delta = max(0, total_delta - idle_delta)
+        return max(0, min(100, round((busy_delta / total_delta) * 100)))
+
+    def _read_nvidia_gpu(self):
+        if not self._nvidia_smi:
+            return None, None
+
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        try:
+            result = subprocess.run(
+                [
+                    self._nvidia_smi,
+                    "--query-gpu=temperature.gpu,utilization.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                creationflags=flags,
+                check=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return None, None
+
+        first_line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+        parts = [part.strip() for part in first_line.split(",")]
+        if len(parts) < 2:
+            return None, None
+
+        return self._parse_number(parts[0]), self._parse_number(parts[1])
+
+    def _parse_number(self, value):
+        try:
+            return max(0, min(100, round(float(value))))
+        except ValueError:
+            return None
+
+    def _filetime_to_int(self, filetime):
+        return (filetime.dwHighDateTime << 32) + filetime.dwLowDateTime
 
 
 class FanDial(QWidget):
@@ -28,7 +182,7 @@ class FanDial(QWidget):
         super().__init__(parent)
         self.title = title
         self.percent = percent
-        self.rpm = self._rpm_from_percent(percent)
+        self.rpm = None
         self.spin_degrees = 0.0 if title == "CPU" else 18.0
         self.setFixedSize(220, 230)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -42,7 +196,10 @@ class FanDial(QWidget):
 
     def set_percent(self, percent):
         self.percent = max(0, min(100, int(percent)))
-        self.rpm = self._rpm_from_percent(self.percent)
+        self.update()
+
+    def set_rpm(self, rpm):
+        self.rpm = rpm
         self.update()
 
     def _animate(self):
@@ -50,11 +207,6 @@ class FanDial(QWidget):
             return
         self.spin_degrees = (self.spin_degrees + 2.0 + self.percent * 0.28) % 360
         self.update()
-
-    def _rpm_from_percent(self, percent):
-        if percent <= 0:
-            return 0
-        return int(950 + (percent * 35))
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -87,11 +239,16 @@ class FanDial(QWidget):
 
         painter.setPen(QColor(255, 255, 255))
         painter.setFont(QFont("Segoe UI", 25, QFont.Weight.Bold))
-        painter.drawText(ring_rect.adjusted(0, 24, 0, -28), Qt.AlignmentFlag.AlignCenter, str(self.rpm))
+        primary_text = f"{self.rpm}" if self.rpm is not None else f"{self.percent}%"
+        painter.drawText(ring_rect.adjusted(0, 24, 0, -28), Qt.AlignmentFlag.AlignCenter, primary_text)
 
         painter.setPen(QColor(118, 118, 118))
         painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Normal))
-        painter.drawText(ring_rect.adjusted(0, 78, 0, -14), Qt.AlignmentFlag.AlignCenter, "RPM")
+        painter.drawText(
+            ring_rect.adjusted(0, 78, 0, -14),
+            Qt.AlignmentFlag.AlignCenter,
+            "RPM" if self.rpm is not None else "TARGET",
+        )
 
         painter.setPen(QColor(245, 245, 245))
         painter.setFont(QFont("Segoe UI", 15, QFont.Weight.Medium))
@@ -103,29 +260,24 @@ class FanDial(QWidget):
 
 
 class GraphWidget(QWidget):
-    def __init__(self, name, accent, temp_base, load_base, parent=None):
+    def __init__(self, name, accent, parent=None):
         super().__init__(parent)
         self.name = name
         self.accent = QColor(accent)
-        self.values = self._seed_series(temp_base, 5, 70)
-        self.load = self._seed_series(load_base, 9, 100)
+        self.values = [None for _ in range(86)]
+        self.load = [None for _ in range(86)]
         self.setMinimumHeight(118)
         self.setMaximumHeight(135)
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._tick)
-        self.timer.start(900)
-
-    def _seed_series(self, base, spread, limit):
-        return [
-            max(0, min(limit, int(base + math.sin(index / 8) * spread + random.randint(-spread, spread))))
-            for index in range(86)
-        ]
-
-    def _tick(self):
-        self.values = self.values[1:] + [max(30, min(96, self.values[-1] + random.randint(-2, 3)))]
-        self.load = self.load[1:] + [max(5, min(100, self.load[-1] + random.randint(-5, 6)))]
+    def update_sample(self, temp, load):
+        self.values = self.values[1:] + [self._normalize(temp)]
+        self.load = self.load[1:] + [self._normalize(load)]
         self.update()
+
+    def _normalize(self, value):
+        if value is None:
+            return None
+        return max(0, min(100, int(value)))
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -155,9 +307,9 @@ class GraphWidget(QWidget):
         load = self.load[-1]
         painter.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
         painter.setPen(QColor(226, 20, 38))
-        painter.drawText(QRectF(rect.right() - 120, 22, 105, 34), Qt.AlignmentFlag.AlignRight, f"{temp}C")
+        painter.drawText(QRectF(rect.right() - 120, 22, 105, 34), Qt.AlignmentFlag.AlignRight, self._format_temp(temp))
         painter.setPen(self.accent)
-        painter.drawText(QRectF(rect.right() - 120, 66, 105, 34), Qt.AlignmentFlag.AlignRight, f"{load}%")
+        painter.drawText(QRectF(rect.right() - 120, 66, 105, 34), Qt.AlignmentFlag.AlignRight, self._format_load(load))
 
     def _draw_series(self, painter, rect, values, color, width):
         if len(values) < 2:
@@ -167,13 +319,24 @@ class GraphWidget(QWidget):
         points = []
 
         for index, value in enumerate(values):
+            if value is None:
+                points.append(None)
+                continue
             x = rect.left() + index * step
             y = rect.bottom() - (value / 100) * rect.height()
             points.append(QPointF(x, y))
 
         painter.setPen(QPen(color, width))
         for index in range(1, len(points)):
+            if points[index - 1] is None or points[index] is None:
+                continue
             painter.drawLine(points[index - 1], points[index])
+
+    def _format_temp(self, value):
+        return "--C" if value is None else f"{value}C"
+
+    def _format_load(self, value):
+        return "--%" if value is None else f"{value}%"
 
 
 class ModeButton(QPushButton):
@@ -209,12 +372,23 @@ class ModeButton(QPushButton):
 
 
 class ForcaNitroApp(QWidget):
+    telemetry_ready = pyqtSignal(dict)
+
     def __init__(self):
         super().__init__()
         self.mode = "Auto"
         self.cpu_percent = 45
         self.gpu_percent = 45
+        self.syncing_sliders = False
+        self.telemetry_busy = False
+        self.monitor = SystemMonitor()
         self.init_ui()
+        self.telemetry_ready.connect(self._apply_telemetry)
+
+        self.telemetry_timer = QTimer(self)
+        self.telemetry_timer.timeout.connect(self._request_telemetry)
+        self.telemetry_timer.start(2500)
+        self._request_telemetry()
 
     def init_ui(self):
         self.setWindowTitle("ForcaNitro - Controle Termico")
@@ -332,7 +506,7 @@ class ForcaNitroApp(QWidget):
         self.auto_button = self._add_mode_button(modes_layout, "Auto", "Controle da BIOS")
         self.max_button = self._add_mode_button(modes_layout, "Max", "CPU/GPU 100%")
         self.quiet_button = self._add_mode_button(modes_layout, "Fixo", "CPU/GPU 40%")
-        self.custom_button = self._add_mode_button(modes_layout, "Custom", "CPU/GPU juntos")
+        self.custom_button = self._add_mode_button(modes_layout, "Custom", "Ajuste manual")
         self.auto_button.setChecked(True)
         modes_layout.addStretch()
 
@@ -383,10 +557,41 @@ class ForcaNitroApp(QWidget):
         label.setStyleSheet("color: #a5a5a5; font-size: 15px;")
         body.addWidget(label)
 
-        self.custom_slider, self.custom_value = self._slider_row("CPU/GPU", 40)
-        body.addWidget(self._slider_card("CPU + GPU", self.custom_slider, self.custom_value))
+        self.link_checkbox = QCheckBox("Vincular CPU/GPU")
+        self.link_checkbox.setChecked(True)
+        self.link_checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.link_checkbox.setStyleSheet(
+            """
+            QCheckBox {
+                color: #e6e6e6;
+                font-size: 14px;
+                font-weight: 700;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #c81023;
+                border: 2px solid #f4f4f4;
+            }
+            QCheckBox::indicator:unchecked {
+                background-color: #222222;
+                border: 2px solid #777777;
+            }
+            """
+        )
+        self.link_checkbox.stateChanged.connect(self._toggle_linked_fans)
+        body.addWidget(self.link_checkbox)
 
-        self.custom_slider.valueChanged.connect(self._preview_custom_speed)
+        self.cpu_slider, self.cpu_value = self._slider_row("CPU", 40)
+        self.gpu_slider, self.gpu_value = self._slider_row("GPU", 40)
+        body.addWidget(self._slider_card("CPU Fan", self.cpu_slider, self.cpu_value))
+        body.addWidget(self._slider_card("GPU Fan", self.gpu_slider, self.gpu_value))
+
+        self.cpu_slider.valueChanged.connect(lambda value: self._preview_custom_speed("cpu", value))
+        self.gpu_slider.valueChanged.connect(lambda value: self._preview_custom_speed("gpu", value))
 
         apply_custom = QPushButton("Aplicar Custom")
         apply_custom.setObjectName("AccentButton")
@@ -404,11 +609,13 @@ class ForcaNitroApp(QWidget):
         body.setContentsMargins(20, 14, 20, 18)
         body.setSpacing(12)
 
-        subtitle = QLabel("Temperatura (C) / Loading (%)")
+        subtitle = QLabel("Temperatura real quando disponivel / Uso (%)")
         subtitle.setStyleSheet("color: #898989; font-size: 15px;")
         body.addWidget(subtitle)
-        body.addWidget(GraphWidget("CPU", "#ff8a22", 55, 38))
-        body.addWidget(GraphWidget("GPU", "#ff8a22", 44, 28))
+        self.cpu_graph = GraphWidget("CPU", "#ff8a22")
+        self.gpu_graph = GraphWidget("GPU", "#ff8a22")
+        body.addWidget(self.cpu_graph)
+        body.addWidget(self.gpu_graph)
 
         panel.layout().addLayout(body)
         return panel
@@ -444,23 +651,38 @@ class ForcaNitroApp(QWidget):
         slider.setRange(30, 100)
         slider.setValue(initial)
         value = QLabel(f"{initial}%")
-        value.setMinimumWidth(44)
-        value.setAlignment(Qt.AlignmentFlag.AlignRight)
-        value.setStyleSheet("font-weight: 700; color: #f4f4f4;")
+        value.setFixedSize(64, 24)
+        value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        value.setStyleSheet(
+            """
+            background-color: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 4px;
+            font-weight: 800;
+            color: #f4f4f4;
+            """
+        )
         return slider, value
 
     def _slider_card(self, title, slider, value_label):
         card = QFrame()
         card.setObjectName("ControlCard")
-        row = QGridLayout(card)
-        row.setContentsMargins(16, 12, 16, 14)
-        row.setHorizontalSpacing(12)
-        row.setVerticalSpacing(10)
+        card.setMinimumHeight(74)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 12, 18, 14)
+        layout.setSpacing(9)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(10)
         title_label = QLabel(title)
         title_label.setStyleSheet("font-size: 14px; font-weight: 800; color: #e7e7e7;")
-        row.addWidget(title_label, 0, 0)
-        row.addWidget(value_label, 0, 1)
-        row.addWidget(slider, 1, 0, 1, 2)
+        header.addWidget(title_label)
+        header.addWidget(value_label)
+        header.addStretch()
+
+        layout.addLayout(header)
+        layout.addWidget(slider)
         return card
 
     def _refresh_visuals(self):
@@ -470,12 +692,55 @@ class ForcaNitroApp(QWidget):
     def _set_status(self, message):
         self.status_label.setText(message)
 
-    def _preview_custom_speed(self, value):
-        self.custom_value.setText(f"{value}%")
+    def _preview_custom_speed(self, source, value):
+        if self.syncing_sliders:
+            return
+
+        if self.link_checkbox.isChecked():
+            self.syncing_sliders = True
+            target_slider = self.gpu_slider if source == "cpu" else self.cpu_slider
+            blocker = QSignalBlocker(target_slider)
+            target_slider.setValue(value)
+            del blocker
+            self.syncing_sliders = False
+
+        self._update_slider_labels()
         if self.custom_button.isChecked():
-            self.cpu_percent = value
-            self.gpu_percent = value
+            self.cpu_percent = self.cpu_slider.value()
+            self.gpu_percent = self.gpu_slider.value()
             self._refresh_visuals()
+
+    def _toggle_linked_fans(self, _state=None):
+        if self.link_checkbox.isChecked():
+            blocker = QSignalBlocker(self.gpu_slider)
+            self.gpu_slider.setValue(self.cpu_slider.value())
+            del blocker
+        self._update_slider_labels()
+        mode = "vinculado" if self.link_checkbox.isChecked() else "separado"
+        self._set_status(f"Custom: controle {mode}.")
+
+    def _update_slider_labels(self):
+        self.cpu_value.setText(f"{self.cpu_slider.value()}%")
+        self.gpu_value.setText(f"{self.gpu_slider.value()}%")
+
+    def _request_telemetry(self):
+        if self.telemetry_busy:
+            return
+
+        self.telemetry_busy = True
+        worker = threading.Thread(target=self._read_telemetry_background, daemon=True)
+        worker.start()
+
+    def _read_telemetry_background(self):
+        data = self.monitor.read()
+        self.telemetry_ready.emit(data)
+
+    def _apply_telemetry(self, data):
+        self.telemetry_busy = False
+        self.cpu_graph.update_sample(data["cpu_temp"], data["cpu_load"])
+        self.gpu_graph.update_sample(data["gpu_temp"], data["gpu_load"])
+        self.cpu_dial.set_rpm(data["cpu_rpm"])
+        self.gpu_dial.set_rpm(data["gpu_rpm"])
 
     def percent_to_hex(self, percent):
         percent = max(0, min(100, int(percent)))
@@ -526,8 +791,7 @@ class ForcaNitroApp(QWidget):
 
     def set_custom(self):
         self.custom_button.setChecked(True)
-        value = self.custom_slider.value()
-        self.apply_manual_fans(value, value, "Custom")
+        self.apply_manual_fans(self.cpu_slider.value(), self.gpu_slider.value(), "Custom")
 
     def set_auto(self):
         auto_ok = self.run_command("0x22", "0x04") and self.run_command("0x21", "0x10")

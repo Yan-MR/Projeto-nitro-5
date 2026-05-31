@@ -4,9 +4,24 @@ ForcaNitro is a small Windows utility for manual fan control on Acer Nitro noteb
 
 It was built for a real Acer Nitro 5 setup where the original NitroSense app stopped working, but the embedded controller could still be controlled through `ec-probe.exe`.
 
-> Compatibility note: this project has only been tested on an Acer Nitro 5 AN515-58 family notebook, with NitroSense V31 / NitroSense Service 3.01.3052. It may not work on other Acer Nitro, Predator, or Aspire models without changing the EC addresses.
+> Compatibility note: this project has only been tested on an Acer Nitro 5 AN515-58-54UH / NH.QJCAL.004 notebook, with NitroSense V31 / NitroSense Service 3.01.3052. It may not work on other Acer Nitro, Predator, or Aspire models without changing the EC addresses.
 
 ![ForcaNitro dashboard](docs/assets/forcanitro-dashboard.png)
+
+## Download
+
+Download the latest release from:
+
+https://github.com/Yan-MR/Projeto-nitro-5/releases/latest
+
+Release assets usually include:
+
+- `ForcaNitro.exe`: the ForcaNitro app.
+- `NoteBookFanControl.1.6.3.setup.exe`: optional NBFC installer, included for convenience because ForcaNitro needs `ec-probe.exe`.
+
+If you prefer, download NBFC directly from the original project:
+
+https://github.com/hirschmann/nbfc
 
 ## What It Does
 
@@ -16,8 +31,8 @@ It was built for a real Acer Nitro 5 setup where the original NitroSense app sto
   - `Auto`: returns fan control to BIOS/motherboard logic.
   - `Max`: sets CPU and GPU fans to 100%.
   - `Fixed`: sets CPU and GPU fans to 40%.
-- Offers a `Custom` profile with one shared fan speed slider for CPU + GPU.
-- Shows animated fan dials and visual monitoring graphs.
+- Offers a `Custom` profile with separate CPU/GPU fan sliders and a linked mode enabled by default.
+- Shows animated fan dials with real RPM readings where available.
 - Can redirect the physical NitroSense keyboard button to open/focus ForcaNitro.
 
 ## Important Safety Warning
@@ -42,8 +57,9 @@ Use this only if you understand the risk. Keep temperatures monitored after chan
 
 This is the only tested setup so far:
 
-- Notebook: Acer Nitro 5 AN515-58 family
+- Notebook: Acer Nitro 5 AN515-58-54UH / NH.QJCAL.004 family
 - OS: Windows 11
+- BIOS: `V2.19`
 - NitroSense AppX: `AcerIncorporated.NitroSenseV31`
 - NitroSense package seen during testing: `3.1.3052.0`
 - NitroSense Service: `3.01.3052`
@@ -61,6 +77,7 @@ C:\Program Files (x86)\NoteBook FanControl\ec-probe.exe
 - Python 3.13 tested, other Python 3 versions may work
 - PyQt6
 - NoteBook FanControl installed, with `ec-probe.exe` available
+- Optional: NVIDIA driver with `nvidia-smi` available for GPU temperature/load monitoring
 
 Install Python dependencies:
 
@@ -74,7 +91,7 @@ ForcaNitro uses `ec-probe.exe` from [NoteBook FanControl / NBFC](https://github.
 
 NBFC is a separate open-source project that provides fan control tooling for notebooks. ForcaNitro does not include or modify NBFC source code; it expects NoteBook FanControl to be installed separately and calls the local `ec-probe.exe` executable to write the EC values used by this project.
 
-Please check the [NBFC repository](https://github.com/hirschmann/nbfc) and its license before redistributing any NBFC binaries.
+Some ForcaNitro releases may include the original unmodified NBFC installer as a convenience asset. Please check the [NBFC repository](https://github.com/hirschmann/nbfc), its source code, and its license before redistributing any NBFC binaries.
 
 ## Running From Source
 
@@ -118,8 +135,20 @@ C:\Program Files (x86)\NoteBook FanControl\ec-probe.exe
    - `Auto`: return control to the BIOS.
    - `Max`: run CPU and GPU fans at 100%.
    - `Fixed`: run CPU and GPU fans at 40%.
-   - `Custom`: choose one shared percentage for CPU and GPU.
+   - `Custom`: choose CPU and GPU fan targets separately, or keep `Link CPU/GPU` enabled for one shared value.
 5. Watch temperatures after applying any manual fan profile.
+
+## Monitoring Notes
+
+Older releases used visual/demo values in the monitoring graph. Current builds do not fake temperature or usage data.
+
+- CPU usage is read locally through the Windows API.
+- CPU temperature is read locally from the AN515-58 EC profile when available.
+- NVIDIA GPU temperature and usage are read locally through `nvidia-smi` when available.
+- Fan RPM is read locally from the AN515-58 EC profile when available.
+- Unavailable readings are shown as `--` instead of simulated values.
+
+ForcaNitro does not send telemetry anywhere and does not collect serial numbers, SNID, or personal data.
 
 ## NitroSense Keyboard Button Redirect
 
@@ -168,11 +197,33 @@ If you want to test this on another Acer notebook:
 4. Test `Auto` first so you know how to return control to BIOS.
 5. Share your model, NitroSense version, and working EC addresses if you confirm compatibility.
 
+Community compatibility notes:
+
+- `AN515-45`: one user reported that fan control worked when running as administrator, but this is not fully validated yet.
+- `AN517-54`: one user reported that fan control did not work with the current AN515-58 EC profile. This model likely needs different EC registers.
+
+Future support for other models should be handled through explicit model profiles, not automatic hardware scanning. The app should not need to read or upload machine identifiers.
+
 ## Portuguese / PT-BR
 
 ForcaNitro e uma ferramenta pequena para Windows feita para controlar manualmente as ventoinhas de notebooks Acer Nitro quando o NitroSense original para de funcionar, fica preso em segundo plano ou nao abre corretamente.
 
-> Nota de compatibilidade: este projeto foi testado somente em um Acer Nitro 5 da familia AN515-58, com NitroSense V31 / NitroSense Service 3.01.3052. Outros modelos podem usar enderecos EC diferentes.
+> Nota de compatibilidade: este projeto foi testado somente em um Acer Nitro 5 AN515-58-54UH / NH.QJCAL.004, com NitroSense V31 / NitroSense Service 3.01.3052. Outros modelos podem usar enderecos EC diferentes.
+
+### Download
+
+Baixe a versao mais recente em:
+
+https://github.com/Yan-MR/Projeto-nitro-5/releases/latest
+
+Os arquivos da release normalmente incluem:
+
+- `ForcaNitro.exe`: aplicativo ForcaNitro.
+- `NoteBookFanControl.1.6.3.setup.exe`: instalador opcional do NBFC, incluido por conveniencia porque o ForcaNitro precisa do `ec-probe.exe`.
+
+Se preferir, baixe o NBFC diretamente do projeto original:
+
+https://github.com/hirschmann/nbfc
 
 ### O Que Ele Faz
 
@@ -182,8 +233,8 @@ ForcaNitro e uma ferramenta pequena para Windows feita para controlar manualment
   - `Auto`: devolve o controle para a BIOS/placa-mae.
   - `Max`: coloca CPU e GPU em 100%.
   - `Fixo`: coloca CPU e GPU em 40%.
-  - `Custom`: usa uma unica barra para CPU + GPU.
-- Mostradores animados de ventoinha.
+  - `Custom`: permite controlar CPU e GPU separadamente, com opcao de vincular as duas barras.
+- Mostradores animados com leitura real de RPM quando disponivel.
 - Redirecionamento opcional da tecla fisica NitroSense para abrir/focar o ForcaNitro.
 
 ### Como Usar
@@ -211,13 +262,25 @@ python -m PyInstaller --noconfirm --onefile --windowed --name ForcaNitro app_ven
 5. Escolha `Auto`, `Max`, `Fixo` ou `Custom`.
 6. Monitore as temperaturas depois de aplicar qualquer perfil manual.
 
+### Monitoramento
+
+Versoes antigas usavam valores visuais/demo no grafico. As versoes atuais nao inventam temperatura ou uso.
+
+- Uso da CPU e lido localmente pela API do Windows.
+- Temperatura da CPU e lida localmente pelo perfil EC do AN515-58 quando disponivel.
+- Temperatura e uso de GPU NVIDIA sao lidos localmente pelo `nvidia-smi`, quando disponivel.
+- RPM das ventoinhas e lido localmente pelo perfil EC do AN515-58 quando disponivel.
+- Leituras indisponiveis aparecem como `--`, sem valores simulados.
+
+O ForcaNitro nao envia telemetria para nenhum lugar e nao coleta serial, SNID ou dados pessoais.
+
 ### Creditos
 
 O ForcaNitro usa o `ec-probe.exe` do [NoteBook FanControl / NBFC](https://github.com/hirschmann/nbfc), projeto open-source criado por Stefan Hirschmann, como backend de baixo nivel para controlar as ventoinhas.
 
 O NBFC e um projeto separado. O ForcaNitro nao inclui nem modifica o codigo-fonte do NBFC; ele espera que o NoteBook FanControl esteja instalado na maquina e chama o `ec-probe.exe` local para aplicar os valores de EC usados por este projeto.
 
-Antes de redistribuir qualquer binario do NBFC, confira o repositorio e a licenca do projeto original.
+Algumas releases do ForcaNitro podem incluir o instalador original e sem modificacoes do NBFC como arquivo de conveniencia. Antes de redistribuir qualquer binario do NBFC, confira o repositorio, o codigo-fonte e a licenca do projeto original.
 
 ### Tecla NitroSense
 
@@ -239,4 +302,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\restore_nitrosense_tas
 
 ### Aviso
 
-Este projeto escreve direto em registradores do embedded controller. Use apenas se voce souber o que esta fazendo e se o seu modelo for compativel. Ate agora, so foi testado no Acer Nitro 5 AN515-58.
+Este projeto escreve direto em registradores do embedded controller. Use apenas se voce souber o que esta fazendo e se o seu modelo for compativel. Ate agora, so foi testado no Acer Nitro 5 AN515-58-54UH / NH.QJCAL.004.
+
+Observacoes da comunidade:
+
+- `AN515-45`: um usuario relatou que funcionou ao executar como administrador, mas ainda nao foi totalmente validado.
+- `AN517-54`: um usuario relatou que nao funcionou com o perfil EC atual do AN515-58. Esse modelo provavelmente precisa de registradores EC diferentes.
+
+Suporte futuro para outros modelos deve ser feito por perfis explicitos de modelo, sem leitura/envio automatico de identificadores da maquina.
