@@ -1,5 +1,7 @@
+import json
 import math
 import ctypes
+import os
 import re
 import shutil
 import subprocess
@@ -30,6 +32,158 @@ CPU_RPM_REGISTER = 0x13
 GPU_RPM_REGISTER = 0x15
 
 
+class AcerProfileController:
+    PROFILE_NAMES = {
+        0: "Silencioso",
+        1: "Balanced",
+        4: "Desempenho",
+        5: "Turbo",
+    }
+    ALLOWED_PROFILES = {1, 4}
+    TESTED_MODEL_TOKEN = "AN515-58"
+
+    READ_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$gaming = Get-CimInstance -Namespace root\wmi -ClassName AcerGamingFunction -ErrorAction Stop | Select-Object -First 1
+if (-not $gaming) { throw 'AcerGamingFunction nao foi encontrado.' }
+$model = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).Model
+$read = Invoke-CimMethod -InputObject $gaming -MethodName GetGamingMiscSetting -Arguments @{ gmInput = [UInt32]0x0B } -ErrorAction Stop
+$raw = [UInt64]$read.gmOutput
+[ordered]@{
+    model = $model
+    profile = [int](($raw -shr 8) -band 0xFF)
+    raw = $raw
+} | ConvertTo-Json -Compress
+"""
+
+    WRITE_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$profileValue = [int]$env:FORCANITRO_ACER_PROFILE
+if ($profileValue -notin @(1, 4)) { throw 'Perfil Acer fora da lista permitida.' }
+$model = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).Model
+if ($model -notmatch 'AN515-58') { throw "Troca de perfil WMI ainda nao validada para o modelo $model." }
+$gaming = Get-CimInstance -Namespace root\wmi -ClassName AcerGamingFunction -ErrorAction Stop | Select-Object -First 1
+if (-not $gaming) { throw 'AcerGamingFunction nao foi encontrado.' }
+$beforeRead = Invoke-CimMethod -InputObject $gaming -MethodName GetGamingMiscSetting -Arguments @{ gmInput = [UInt32]0x0B } -ErrorAction Stop
+$beforeRaw = [UInt64]$beforeRead.gmOutput
+$beforeProfile = [int](($beforeRaw -shr 8) -band 0xFF)
+$payload = [UInt64](0x0B + ($profileValue * 256))
+try {
+    $write = Invoke-CimMethod -InputObject $gaming -MethodName SetGamingMiscSetting -Arguments @{ gmInput = $payload } -ErrorAction Stop
+    Start-Sleep -Milliseconds 350
+    $read = Invoke-CimMethod -InputObject $gaming -MethodName GetGamingMiscSetting -Arguments @{ gmInput = [UInt32]0x0B } -ErrorAction Stop
+    $raw = [UInt64]$read.gmOutput
+    $confirmedProfile = [int](($raw -shr 8) -band 0xFF)
+    if ($confirmedProfile -ne $profileValue) {
+        throw "A Acer nao confirmou o perfil solicitado."
+    }
+}
+catch {
+    if ($beforeProfile -in @(0, 1, 4, 5)) {
+        $rollbackPayload = [UInt64](0x0B + ($beforeProfile * 256))
+        Invoke-CimMethod -InputObject $gaming -MethodName SetGamingMiscSetting -Arguments @{ gmInput = $rollbackPayload } -ErrorAction SilentlyContinue | Out-Null
+    }
+    throw
+}
+[ordered]@{
+    model = $model
+    beforeProfile = $beforeProfile
+    requestedProfile = $profileValue
+    profile = $confirmedProfile
+    raw = $raw
+    writeReturn = $write.ReturnValue
+} | ConvertTo-Json -Compress
+"""
+
+    def read_profile(self):
+        return self._normalize_result(self._run_powershell(self.READ_SCRIPT))
+
+    def set_profile(self, profile):
+        profile = int(profile)
+        if profile not in self.ALLOWED_PROFILES:
+            return {"ok": False, "error": "Perfil Acer nao permitido."}
+
+        return self._normalize_result(
+            self._run_powershell(
+                self.WRITE_SCRIPT,
+                {"FORCANITRO_ACER_PROFILE": str(profile)},
+            ),
+            expected_profile=profile,
+        )
+
+    def _normalize_result(self, result, expected_profile=None):
+        if not result.get("ok"):
+            return result
+
+        profile = int(result.get("profile", -1))
+        model = str(result.get("model", "")).strip()
+        result["profile"] = profile
+        result["profile_name"] = self.PROFILE_NAMES.get(profile, f"Desconhecido ({profile})")
+        result["tested_model"] = self.TESTED_MODEL_TOKEN in model.upper()
+
+        if expected_profile is not None and profile != expected_profile:
+            result["ok"] = False
+            result["error"] = (
+                f"A Acer recebeu o comando, mas confirmou o perfil "
+                f"{result['profile_name']} em vez do solicitado."
+            )
+        return result
+
+    def _run_powershell(self, script, extra_environment=None):
+        if sys.platform != "win32":
+            return {"ok": False, "error": "Perfil Acer WMI disponivel somente no Windows."}
+
+        environment = os.environ.copy()
+        if extra_environment:
+            environment.update(extra_environment)
+
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        try:
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=8.0,
+                creationflags=flags,
+                env=environment,
+            )
+        except FileNotFoundError:
+            return {"ok": False, "error": "PowerShell nao foi encontrado."}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "A leitura do perfil Acer excedeu o tempo limite."}
+
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            if "Acesso negado" in detail or "Access denied" in detail:
+                detail = "Execute o ForcaNitro como administrador para trocar o perfil Acer."
+            else:
+                detail = next(
+                    (line.strip() for line in detail.splitlines() if line.strip()),
+                    "Falha desconhecida no Acer WMI.",
+                )
+            return {"ok": False, "error": detail or "Falha desconhecida no Acer WMI."}
+
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if not lines:
+            return {"ok": False, "error": "Acer WMI nao retornou uma resposta."}
+
+        try:
+            parsed = json.loads(lines[-1])
+        except json.JSONDecodeError:
+            return {"ok": False, "error": "Resposta inesperada recebida do Acer WMI."}
+
+        parsed["ok"] = True
+        return parsed
+
+
 class FILETIME(ctypes.Structure):
     _fields_ = [
         ("dwLowDateTime", ctypes.c_ulong),
@@ -52,6 +206,7 @@ class SystemMonitor:
             "gpu_load": gpu_load,
             "cpu_rpm": self._read_ec_word(ec_values, CPU_RPM_REGISTER),
             "gpu_rpm": self._read_ec_word(ec_values, GPU_RPM_REGISTER),
+            "fan_state": self._read_fan_state(ec_values),
         }
 
     def _read_ec_dump(self):
@@ -82,6 +237,39 @@ class SystemMonitor:
                     continue
 
         return values
+
+    def _read_fan_state(self, values):
+        if not values:
+            return None
+
+        control_21 = values.get(0x21)
+        control_22 = values.get(0x22)
+        cpu_target = values.get(0x37)
+        gpu_target = values.get(0x3A)
+
+        if control_21 == 0x10 and control_22 == 0x04:
+            mode = "Auto"
+        elif cpu_target == 100 and gpu_target == 100:
+            mode = "Max"
+        elif cpu_target == 40 and gpu_target == 40:
+            mode = "Fixo"
+        elif (
+            control_21 == 0x30
+            and control_22 == 0x0C
+            and cpu_target is not None
+            and gpu_target is not None
+        ):
+            mode = "Custom"
+        else:
+            mode = "Desconhecido"
+
+        return {
+            "mode": mode,
+            "cpu_target": cpu_target if cpu_target is not None and 0 <= cpu_target <= 100 else None,
+            "gpu_target": gpu_target if gpu_target is not None and 0 <= gpu_target <= 100 else None,
+            "control_21": control_21,
+            "control_22": control_22,
+        }
 
     def _read_ec_temperature(self, values, address):
         value = values.get(address)
@@ -373,22 +561,30 @@ class ModeButton(QPushButton):
 
 class ForcaNitroApp(QWidget):
     telemetry_ready = pyqtSignal(dict)
+    profile_ready = pyqtSignal(dict)
 
     def __init__(self):
         super().__init__()
-        self.mode = "Auto"
+        self.mode = "Detectando"
         self.cpu_percent = 45
         self.gpu_percent = 45
         self.syncing_sliders = False
         self.telemetry_busy = False
+        self.fan_state_initialized = False
+        self.profile_busy = False
+        self.current_acer_profile = None
+        self.acer_profile_supported = False
         self.monitor = SystemMonitor()
+        self.profile_controller = AcerProfileController()
         self.init_ui()
         self.telemetry_ready.connect(self._apply_telemetry)
+        self.profile_ready.connect(self._apply_profile_result)
 
         self.telemetry_timer = QTimer(self)
         self.telemetry_timer.timeout.connect(self._request_telemetry)
         self.telemetry_timer.start(2500)
         self._request_telemetry()
+        QTimer.singleShot(150, self._request_profile_read)
 
     def init_ui(self):
         self.setWindowTitle("ForcaNitro - Controle Termico")
@@ -507,7 +703,6 @@ class ForcaNitroApp(QWidget):
         self.max_button = self._add_mode_button(modes_layout, "Max", "CPU/GPU 100%")
         self.quiet_button = self._add_mode_button(modes_layout, "Fixo", "CPU/GPU 40%")
         self.custom_button = self._add_mode_button(modes_layout, "Custom", "Ajuste manual")
-        self.auto_button.setChecked(True)
         modes_layout.addStretch()
 
         self.auto_button.clicked.connect(self.set_auto)
@@ -526,10 +721,7 @@ class ForcaNitroApp(QWidget):
 
         right = QVBoxLayout()
         right.setSpacing(8)
-        coolboost = QLabel("CoolBoost  ON")
-        coolboost.setAlignment(Qt.AlignmentFlag.AlignRight)
-        coolboost.setStyleSheet("color: #f0f0f0; font-size: 17px; font-weight: 700;")
-        right.addWidget(coolboost)
+        right.addLayout(self._build_profile_selector())
         right.addStretch()
         right.addLayout(gauges)
         right.addStretch()
@@ -538,6 +730,67 @@ class ForcaNitroApp(QWidget):
         body.addLayout(right, 1)
         panel.layout().addLayout(body)
         return panel
+
+    def _build_profile_selector(self):
+        row = QHBoxLayout()
+        row.setSpacing(0)
+        row.addStretch()
+
+        label = QLabel("Perfil Acer")
+        label.setStyleSheet("color: #9d9d9d; font-size: 13px; margin-right: 10px;")
+        row.addWidget(label)
+
+        self.profile_group = QButtonGroup(self)
+        self.profile_group.setExclusive(True)
+        self.balanced_profile_button = self._profile_button("Balanced")
+        self.performance_profile_button = self._profile_button("Desempenho")
+        self.profile_group.addButton(self.balanced_profile_button)
+        self.profile_group.addButton(self.performance_profile_button)
+        row.addWidget(self.balanced_profile_button)
+        row.addWidget(self.performance_profile_button)
+
+        self.balanced_profile_button.clicked.connect(lambda: self._request_profile_change(1))
+        self.performance_profile_button.clicked.connect(lambda: self._request_profile_change(4))
+        self._set_profile_buttons_enabled(False)
+        return row
+
+    def _profile_button(self, text):
+        button = QPushButton(text)
+        button.setCheckable(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedHeight(32)
+        button.setMinimumWidth(96)
+        button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #1d1d1d;
+                border: 1px solid #3a3a3a;
+                color: #9f9f9f;
+                padding: 5px 11px;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QPushButton:hover {
+                color: #f0f0f0;
+                border-color: #686868;
+            }
+            QPushButton:checked {
+                background-color: #c81023;
+                border-color: #e12639;
+                color: white;
+            }
+            QPushButton:disabled {
+                background-color: #181818;
+                border-color: #292929;
+                color: #555555;
+            }
+            """
+        )
+        return button
+
+    def _set_profile_buttons_enabled(self, enabled):
+        self.balanced_profile_button.setEnabled(enabled)
+        self.performance_profile_button.setEnabled(enabled)
 
     def _build_bottom_area(self):
         bottom = QHBoxLayout()
@@ -741,6 +994,120 @@ class ForcaNitroApp(QWidget):
         self.gpu_graph.update_sample(data["gpu_temp"], data["gpu_load"])
         self.cpu_dial.set_rpm(data["cpu_rpm"])
         self.gpu_dial.set_rpm(data["gpu_rpm"])
+        self._sync_fan_state(data.get("fan_state"))
+
+    def _sync_fan_state(self, fan_state):
+        if self.fan_state_initialized or not fan_state or fan_state["mode"] == "Desconhecido":
+            return
+
+        mode = fan_state["mode"]
+        buttons = {
+            "Auto": self.auto_button,
+            "Max": self.max_button,
+            "Fixo": self.quiet_button,
+            "Custom": self.custom_button,
+        }
+        selected_button = buttons.get(mode)
+
+        blockers = [
+            QSignalBlocker(self.auto_button),
+            QSignalBlocker(self.max_button),
+            QSignalBlocker(self.quiet_button),
+            QSignalBlocker(self.custom_button),
+        ]
+        self.mode_group.setExclusive(False)
+        for button in buttons.values():
+            button.setChecked(button is selected_button)
+        self.mode_group.setExclusive(True)
+        del blockers
+
+        cpu_target = fan_state.get("cpu_target")
+        gpu_target = fan_state.get("gpu_target")
+        if mode != "Auto" and cpu_target is not None and gpu_target is not None:
+            cpu_blocker = QSignalBlocker(self.cpu_slider)
+            gpu_blocker = QSignalBlocker(self.gpu_slider)
+            self.cpu_slider.setValue(max(self.cpu_slider.minimum(), cpu_target))
+            self.gpu_slider.setValue(max(self.gpu_slider.minimum(), gpu_target))
+            del cpu_blocker
+            del gpu_blocker
+            self._update_slider_labels()
+            self.cpu_percent = cpu_target
+            self.gpu_percent = gpu_target
+            self._refresh_visuals()
+
+        self.mode = mode
+        self.fan_state_initialized = True
+
+    def _request_profile_read(self):
+        self._request_profile_operation(None)
+
+    def _request_profile_change(self, profile):
+        if self.profile_busy:
+            return
+        if profile == self.current_acer_profile:
+            profile_name = self.profile_controller.PROFILE_NAMES.get(profile, str(profile))
+            self._set_status(f"Perfil Acer ja esta em {profile_name}.")
+            return
+        self._set_status("Aplicando perfil Acer...")
+        self._request_profile_operation(profile)
+
+    def _request_profile_operation(self, profile):
+        if self.profile_busy:
+            return
+
+        self.profile_busy = True
+        self._set_profile_buttons_enabled(False)
+        worker = threading.Thread(
+            target=self._run_profile_operation_background,
+            args=(profile,),
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_profile_operation_background(self, profile):
+        if profile is None:
+            result = self.profile_controller.read_profile()
+            result["operation"] = "read"
+        else:
+            result = self.profile_controller.set_profile(profile)
+            result["operation"] = "write"
+        self.profile_ready.emit(result)
+
+    def _apply_profile_result(self, result):
+        self.profile_busy = False
+        tested_model = bool(result.get("tested_model"))
+
+        if not result.get("ok"):
+            self._set_profile_buttons_enabled(self.acer_profile_supported)
+            self._select_profile_button(self.current_acer_profile)
+            self._set_status(result.get("error", "Falha ao acessar o perfil Acer."))
+            return
+
+        profile = result["profile"]
+        self.current_acer_profile = profile
+        self.acer_profile_supported = tested_model
+        self._set_profile_buttons_enabled(tested_model)
+        self._select_profile_button(profile)
+
+        if not tested_model:
+            self._set_status(
+                f"Perfil Acer detectado: {result['profile_name']}. "
+                "Troca ainda nao validada neste modelo."
+            )
+            return
+
+        if result.get("operation") == "write":
+            self._set_status(f"Perfil Acer: {result['profile_name']} aplicado e confirmado.")
+        else:
+            self._set_status(f"Perfil Acer atual: {result['profile_name']}.")
+
+    def _select_profile_button(self, profile):
+        blocker_balanced = QSignalBlocker(self.balanced_profile_button)
+        blocker_performance = QSignalBlocker(self.performance_profile_button)
+        self.balanced_profile_button.setChecked(profile == 1)
+        self.performance_profile_button.setChecked(profile == 4)
+        del blocker_balanced
+        del blocker_performance
 
     def percent_to_hex(self, percent):
         percent = max(0, min(100, int(percent)))

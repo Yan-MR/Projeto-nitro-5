@@ -1,22 +1,9 @@
 $ErrorActionPreference = "SilentlyContinue"
 
 $ProjectPath = $PSScriptRoot
-$ForcaNitroPath = Join-Path $ProjectPath "dist\ForcaNitro.exe"
+$LauncherPath = Join-Path $ProjectPath "nitrosense_key_launch.ps1"
 $PSLauncherPath = "C:\Program Files\Acer\NitroSense Service\PSLauncher.exe"
 $LogPath = Join-Path $ProjectPath "nitrosense_key_redirect.log"
-
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-
-public static class WindowTools {
-    [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-}
-"@
 
 function Write-RedirectLog($Message) {
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -24,19 +11,16 @@ function Write-RedirectLog($Message) {
 }
 
 function Show-Or-StartForcaNitro {
-    $existing = Get-Process -Name "ForcaNitro" |
-        Where-Object { $_.MainWindowHandle -ne 0 } |
-        Select-Object -First 1
-
-    if ($existing) {
-        [WindowTools]::ShowWindow($existing.MainWindowHandle, 9) | Out-Null
-        [WindowTools]::SetForegroundWindow($existing.MainWindowHandle) | Out-Null
-        Write-RedirectLog "Focused existing ForcaNitro window (PID $($existing.Id))."
+    if (-not (Test-Path $LauncherPath)) {
+        Write-RedirectLog "NitroSense key launcher not found at: $LauncherPath"
         return
     }
 
-    Start-Process -FilePath $ForcaNitroPath
-    Write-RedirectLog "Started ForcaNitro."
+    Start-Process `
+        -FilePath "powershell.exe" `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$LauncherPath`"" `
+        -WindowStyle Hidden
+    Write-RedirectLog "Started NitroSense key launcher."
 }
 
 function Ensure-PSAgent {

@@ -33,6 +33,8 @@ https://github.com/hirschmann/nbfc
   - `Fixed`: sets CPU and GPU fans to 40%.
 - Offers a `Custom` profile with separate CPU/GPU fan sliders and a linked mode enabled by default.
 - Shows animated fan dials with real RPM readings where available.
+- Detects the current EC fan-control state on startup and marks the real `Auto`, `Max`, `Fixed`, or `Custom` mode instead of assuming `Auto`.
+- Reads and switches the Acer platform profile between `Balanced` and `Performance` through `AcerGamingFunction` WMI on the tested AN515-58.
 - Can redirect the physical NitroSense keyboard button to open/focus ForcaNitro.
 
 ## Important Safety Warning
@@ -52,6 +54,8 @@ The current EC writes are:
 | Return to BIOS/auto | `0x21` | `0x10` |
 
 Use this only if you understand the risk. Keep temperatures monitored after changing fan modes.
+
+The Acer `Performance` platform profile may increase power use, temperatures, and fan activity. Switch back to `Balanced` if temperatures or system behavior become abnormal.
 
 ## Tested Environment
 
@@ -93,6 +97,8 @@ NBFC is a separate open-source project that provides fan control tooling for not
 
 Some ForcaNitro releases may include the original unmodified NBFC installer as a convenience asset. Please check the [NBFC repository](https://github.com/hirschmann/nbfc), its source code, and its license before redistributing any NBFC binaries.
 
+The Acer WMI profile and fan-control research was also informed by the open-source [Acer-Predator-Scripts](https://github.com/rafradek/Acer-Predator-Scripts) and [AeroForge NitroSense Alternative](https://github.com/noahcabral/aeroforge-nitrosense-alternative) projects. ForcaNitro currently uses WMI only for the tested AN515-58 platform-profile selector; its existing fan writes still use the documented EC profile above.
+
 ## Running From Source
 
 ```powershell
@@ -100,6 +106,8 @@ python app_ventoinha.py
 ```
 
 Opening the app does not change fan speed automatically. Fan commands run only when you click a mode button.
+
+The Windows executable requests administrator access when opened because EC writes and Acer WMI access require elevation. Opening ForcaNitro only reads and displays the current fan/profile state; it does not automatically change either mode.
 
 ## Building The EXE
 
@@ -112,7 +120,7 @@ pip install pyinstaller
 Build:
 
 ```powershell
-python -m PyInstaller --noconfirm --onefile --windowed --name ForcaNitro app_ventoinha.py
+python -m PyInstaller --noconfirm --onefile --windowed --uac-admin --name ForcaNitro app_ventoinha.py
 ```
 
 The generated executable will be:
@@ -136,7 +144,10 @@ C:\Program Files (x86)\NoteBook FanControl\ec-probe.exe
    - `Max`: run CPU and GPU fans at 100%.
    - `Fixed`: run CPU and GPU fans at 40%.
    - `Custom`: choose CPU and GPU fan targets separately, or keep `Link CPU/GPU` enabled for one shared value.
-5. Watch temperatures after applying any manual fan profile.
+5. On the tested AN515-58, choose `Balanced` or `Performance` in the Acer profile selector.
+6. Watch temperatures after applying any manual fan or performance profile.
+
+The Acer platform-profile selector is separate from fan control. It uses the firmware `AcerGamingFunction.SetGamingMiscSetting` WMI method and confirms the selected profile through a readback. Writes are currently enabled only when Windows reports an `AN515-58` model.
 
 ## Monitoring Notes
 
@@ -165,7 +176,10 @@ This project includes a reversible redirect flow:
   - Installs a scheduled task that starts the redirect watcher at logon.
 - `install_nitrosense_task_redirect.ps1`
   - Backs up the original Acer `NitroSense` scheduled task.
-  - Redirects that task to `ForcaNitro.exe`.
+  - Redirects that task to the elevated ForcaNitro key launcher.
+- `nitrosense_key_launch.ps1`
+  - Opens or focuses ForcaNitro through the elevated NitroSense scheduled task.
+  - Does not change the fan mode or Acer platform profile.
 - `restore_nitrosense_task.ps1`
   - Restores the backed-up Acer scheduled task.
 - `uninstall_nitrosense_key_redirect.ps1`
@@ -179,6 +193,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_nitrosense_tas
 ```
 
 After installation, press the NitroSense key. It should open or focus ForcaNitro.
+The redirected key opens ForcaNitro through a highest-privilege scheduled task and does not automatically change fan or Acer platform profiles.
 
 To remove the redirect:
 
@@ -202,7 +217,21 @@ Community compatibility notes:
 - `AN515-45`: one user reported that fan control worked when running as administrator, but this is not fully validated yet.
 - `AN517-54`: one user reported that fan control did not work with the current AN515-58 EC profile. This model likely needs different EC registers.
 
-Future support for other models should be handled through explicit model profiles, not automatic hardware scanning. The app should not need to read or upload machine identifiers.
+Future support for other models should be handled through explicit, validated model profiles instead of guessing EC addresses. Compatibility checks may read the non-personal Windows model name locally, but ForcaNitro does not upload machine identifiers.
+
+### Read-Only Acer WMI Compatibility Diagnostic
+
+Some newer Acer models expose an `AcerGamingFunction` WMI interface with dedicated fan and platform-profile methods. This may offer a safer future compatibility path than guessing embedded-controller addresses.
+
+The repository includes an optional diagnostic that invokes only known `Get*` methods:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\diagnostics\collect_acer_wmi_readonly.ps1
+```
+
+The diagnostic does not change fan settings, access the internet, collect serial/SNID values, or upload anything. It creates a local JSON report containing the notebook model, BIOS/Windows versions, available Acer WMI `Get` methods, and known read-only responses. Review the file before choosing to share it.
+
+See [`diagnostics/README.md`](diagnostics/README.md) for the complete field and privacy description.
 
 ## Portuguese / PT-BR
 
@@ -234,7 +263,9 @@ https://github.com/hirschmann/nbfc
   - `Max`: coloca CPU e GPU em 100%.
   - `Fixo`: coloca CPU e GPU em 40%.
   - `Custom`: permite controlar CPU e GPU separadamente, com opcao de vincular as duas barras.
+- Leitura e troca do perfil Acer entre `Balanced` e `Desempenho` via WMI `AcerGamingFunction` no AN515-58 testado.
 - Mostradores animados com leitura real de RPM quando disponivel.
+- Deteccao do estado EC atual ao abrir, marcando o modo real `Auto`, `Max`, `Fixo` ou `Custom` em vez de assumir `Auto`.
 - Redirecionamento opcional da tecla fisica NitroSense para abrir/focar o ForcaNitro.
 
 ### Como Usar
@@ -255,12 +286,17 @@ python app_ventoinha.py
 Ou gere o executavel:
 
 ```powershell
-python -m PyInstaller --noconfirm --onefile --windowed --name ForcaNitro app_ventoinha.py
+python -m PyInstaller --noconfirm --onefile --windowed --uac-admin --name ForcaNitro app_ventoinha.py
 ```
 
 4. Abra `dist\ForcaNitro.exe`.
 5. Escolha `Auto`, `Max`, `Fixo` ou `Custom`.
-6. Monitore as temperaturas depois de aplicar qualquer perfil manual.
+6. No AN515-58 testado, escolha `Balanced` ou `Desempenho` no seletor de perfil Acer.
+7. Monitore as temperaturas depois de aplicar qualquer perfil manual ou de desempenho.
+
+O seletor de perfil Acer e separado do controle das ventoinhas. Ele usa o metodo WMI de firmware `AcerGamingFunction.SetGamingMiscSetting` e confirma o perfil escolhido por uma leitura posterior. A escrita esta habilitada somente quando o Windows informa um modelo `AN515-58`.
+
+O executavel solicita acesso de administrador ao abrir porque as escritas EC e o acesso Acer WMI exigem elevacao. Abrir o ForcaNitro apenas le e exibe o estado atual das ventoinhas e do perfil Acer; nenhum modo e alterado automaticamente.
 
 ### Monitoramento
 
@@ -282,9 +318,13 @@ O NBFC e um projeto separado. O ForcaNitro nao inclui nem modifica o codigo-font
 
 Algumas releases do ForcaNitro podem incluir o instalador original e sem modificacoes do NBFC como arquivo de conveniencia. Antes de redistribuir qualquer binario do NBFC, confira o repositorio, o codigo-fonte e a licenca do projeto original.
 
+As pesquisas sobre perfis e ventoinhas via Acer WMI tambem foram baseadas nos projetos open-source [Acer-Predator-Scripts](https://github.com/rafradek/Acer-Predator-Scripts) e [AeroForge NitroSense Alternative](https://github.com/noahcabral/aeroforge-nitrosense-alternative). Atualmente, o ForcaNitro usa WMI somente no seletor de perfil da plataforma AN515-58 testada; os controles existentes das ventoinhas continuam usando o perfil EC documentado acima.
+
 ### Tecla NitroSense
 
 No notebook testado, a tecla NitroSense passa pelos servicos da Acer. O projeto inclui scripts para fazer essa tecla abrir/focar o ForcaNitro.
+
+A tecla redirecionada abre o ForcaNitro por uma tarefa agendada com privilegio elevado e nao altera automaticamente o modo das ventoinhas ou o perfil Acer.
 
 Instalar em PowerShell como administrador:
 
@@ -304,9 +344,25 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\restore_nitrosense_tas
 
 Este projeto escreve direto em registradores do embedded controller. Use apenas se voce souber o que esta fazendo e se o seu modelo for compativel. Ate agora, so foi testado no Acer Nitro 5 AN515-58-54UH / NH.QJCAL.004.
 
+O perfil Acer `Desempenho` pode aumentar consumo de energia, temperaturas e atividade das ventoinhas. Volte para `Balanced` caso as temperaturas ou o comportamento do sistema fiquem anormais.
+
 Observacoes da comunidade:
 
 - `AN515-45`: um usuario relatou que funcionou ao executar como administrador, mas ainda nao foi totalmente validado.
 - `AN517-54`: um usuario relatou que nao funcionou com o perfil EC atual do AN515-58. Esse modelo provavelmente precisa de registradores EC diferentes.
 
-Suporte futuro para outros modelos deve ser feito por perfis explicitos de modelo, sem leitura/envio automatico de identificadores da maquina.
+Suporte futuro para outros modelos deve ser feito por perfis explicitos e validados, sem tentar adivinhar enderecos EC. A verificacao de compatibilidade pode ler localmente o nome nao pessoal do modelo informado pelo Windows, mas o ForcaNitro nao envia identificadores da maquina.
+
+### Diagnostico Acer WMI Somente Leitura
+
+Alguns modelos Acer mais novos disponibilizam a interface WMI `AcerGamingFunction`, com metodos especificos para ventoinhas e perfis. Isso pode permitir uma compatibilidade futura mais segura do que tentar adivinhar enderecos do embedded controller.
+
+O repositorio inclui um diagnostico opcional que chama somente metodos conhecidos iniciados com `Get`:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\diagnostics\collect_acer_wmi_readonly.ps1
+```
+
+O diagnostico nao altera ventoinhas, nao acessa a internet, nao coleta serial/SNID e nao envia nada. Ele gera um JSON local com modelo do notebook, versoes da BIOS/Windows, metodos Acer WMI `Get` disponiveis e respostas conhecidas somente leitura. A pessoa pode revisar o arquivo antes de decidir compartilha-lo.
+
+Veja [`diagnostics/README.md`](diagnostics/README.md) para a descricao completa dos campos e da privacidade.
