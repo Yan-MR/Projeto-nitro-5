@@ -48,11 +48,13 @@ while ($true) {
         $lastAgentCheck = Get-Date
     }
 
-    $nitroProcesses = Get-Process -Name "NitroSense"
+    $nitroProcesses = @(Get-Process -Name "NitroSense")
 
-    foreach ($process in $nitroProcesses) {
-        Write-RedirectLog "Detected NitroSense.exe (PID $($process.Id)). Redirecting."
-        Stop-Process -Id $process.Id -Force
+    if ($nitroProcesses.Count -gt 0) {
+        foreach ($process in $nitroProcesses) {
+            Write-RedirectLog "Detected NitroSense.exe (PID $($process.Id)). Redirecting."
+            Stop-Process -Id $process.Id -Force
+        }
         Show-Or-StartForcaNitro
     }
 

@@ -30,6 +30,56 @@ EC_PROBE_PATH = r"C:\Program Files (x86)\NoteBook FanControl\ec-probe.exe"
 CPU_TEMP_REGISTER = 0xA7
 CPU_RPM_REGISTER = 0x13
 GPU_RPM_REGISTER = 0x15
+WINDOW_TITLE = "ForcaNitro - Controle Termico"
+SINGLE_INSTANCE_MUTEX = r"Local\ForcaNitro.SingleInstance"
+
+
+def acquire_single_instance():
+    if sys.platform != "win32":
+        return True, None
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_bool
+
+    ctypes.set_last_error(0)
+    handle = kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX)
+    if not handle:
+        return True, None
+
+    if ctypes.get_last_error() == 183:
+        kernel32.CloseHandle(handle)
+        return False, None
+
+    return True, handle
+
+
+def focus_existing_instance():
+    if sys.platform != "win32":
+        return
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+    user32.FindWindowW.restype = ctypes.c_void_p
+    user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.ShowWindow.restype = ctypes.c_bool
+    user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+    user32.SetForegroundWindow.restype = ctypes.c_bool
+
+    window = user32.FindWindowW(None, WINDOW_TITLE)
+    if window:
+        user32.ShowWindow(window, 9)
+        user32.SetForegroundWindow(window)
+
+
+def release_single_instance(handle):
+    if handle and sys.platform == "win32":
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
+        kernel32.CloseHandle(handle)
 
 
 class AcerProfileController:
@@ -587,7 +637,7 @@ class ForcaNitroApp(QWidget):
         QTimer.singleShot(150, self._request_profile_read)
 
     def init_ui(self):
-        self.setWindowTitle("ForcaNitro - Controle Termico")
+        self.setWindowTitle(WINDOW_TITLE)
         self.resize(1280, 760)
         self.setMinimumSize(1120, 700)
         self.setStyleSheet(
@@ -1171,7 +1221,17 @@ class ForcaNitroApp(QWidget):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    ex = ForcaNitroApp()
-    ex.show()
-    sys.exit(app.exec())
+    is_primary_instance, instance_mutex = acquire_single_instance()
+    if not is_primary_instance:
+        focus_existing_instance()
+        sys.exit(0)
+
+    try:
+        app = QApplication(sys.argv)
+        ex = ForcaNitroApp()
+        ex.show()
+        exit_code = app.exec()
+    finally:
+        release_single_instance(instance_mutex)
+
+    sys.exit(exit_code)
