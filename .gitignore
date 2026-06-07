@@ -17,6 +17,7 @@ NoteBookFanControl*.exe
 *.log
 NitroSense.task.backup.xml
 ForcaNitro-WMI-Diagnostic*.json
+ForcaNitro-Compatibility-Diagnostic*.json
 
 # Local reference image from the original NitroSense UI.
 # Do not publish Acer-owned screenshots/assets in this repo.

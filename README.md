@@ -219,17 +219,19 @@ Community compatibility notes:
 
 Future support for other models should be handled through explicit, validated model profiles instead of guessing EC addresses. Compatibility checks may read the non-personal Windows model name locally, but ForcaNitro does not upload machine identifiers.
 
-### Read-Only Acer WMI Compatibility Diagnostic
+### Read-Only Compatibility Diagnostic
 
-Some newer Acer models expose an `AcerGamingFunction` WMI interface with dedicated fan and platform-profile methods. This may offer a safer future compatibility path than guessing embedded-controller addresses.
+Some Acer models expose an `AcerGamingFunction` WMI interface with dedicated fan and platform-profile methods, while others may still need model-specific EC addresses. The safest way to expand compatibility is to collect read-only evidence first.
 
-The repository includes an optional diagnostic that invokes only known `Get*` methods:
+The repository includes an optional diagnostic:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\diagnostics\collect_acer_wmi_readonly.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\diagnostics\collect_forcanitro_compatibility.ps1
 ```
 
-The diagnostic does not change fan settings, access the internet, collect serial/SNID values, or upload anything. It creates a local JSON report containing the notebook model, BIOS/Windows versions, available Acer WMI `Get` methods, and known read-only responses. Review the file before choosing to share it.
+The diagnostic does not change fan settings, access the internet, collect serial/SNID values, or upload anything. It calls only Acer WMI `Get*` methods and selected `ec-probe.exe read` commands, then creates a local JSON report with notebook model, BIOS/Windows versions, available Acer WMI methods, known read-only WMI responses, selected EC bytes, and optional `nvidia-smi` GPU readings.
+
+Review the JSON before choosing to share it.
 
 See [`diagnostics/README.md`](diagnostics/README.md) for the complete field and privacy description.
 
@@ -353,16 +355,18 @@ Observacoes da comunidade:
 
 Suporte futuro para outros modelos deve ser feito por perfis explicitos e validados, sem tentar adivinhar enderecos EC. A verificacao de compatibilidade pode ler localmente o nome nao pessoal do modelo informado pelo Windows, mas o ForcaNitro nao envia identificadores da maquina.
 
-### Diagnostico Acer WMI Somente Leitura
+### Diagnostico De Compatibilidade Somente Leitura
 
-Alguns modelos Acer mais novos disponibilizam a interface WMI `AcerGamingFunction`, com metodos especificos para ventoinhas e perfis. Isso pode permitir uma compatibilidade futura mais segura do que tentar adivinhar enderecos do embedded controller.
+Alguns modelos Acer disponibilizam a interface WMI `AcerGamingFunction`, com metodos especificos para ventoinhas e perfis, enquanto outros podem exigir enderecos EC especificos por modelo. O jeito mais seguro de ampliar compatibilidade e coletar evidencias somente leitura primeiro.
 
-O repositorio inclui um diagnostico opcional que chama somente metodos conhecidos iniciados com `Get`:
+O repositorio inclui um diagnostico opcional:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\diagnostics\collect_acer_wmi_readonly.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\diagnostics\collect_forcanitro_compatibility.ps1
 ```
 
-O diagnostico nao altera ventoinhas, nao acessa a internet, nao coleta serial/SNID e nao envia nada. Ele gera um JSON local com modelo do notebook, versoes da BIOS/Windows, metodos Acer WMI `Get` disponiveis e respostas conhecidas somente leitura. A pessoa pode revisar o arquivo antes de decidir compartilha-lo.
+O diagnostico nao altera ventoinhas, nao acessa a internet, nao coleta serial/SNID e nao envia nada. Ele chama somente metodos Acer WMI `Get*` e comandos selecionados `ec-probe.exe read`, entao gera um JSON local com modelo do notebook, versoes da BIOS/Windows, metodos Acer WMI disponiveis, respostas WMI somente leitura, bytes EC selecionados e leituras opcionais de GPU via `nvidia-smi`.
+
+A pessoa pode revisar o JSON antes de decidir compartilha-lo.
 
 Veja [`diagnostics/README.md`](diagnostics/README.md) para a descricao completa dos campos e da privacidade.
